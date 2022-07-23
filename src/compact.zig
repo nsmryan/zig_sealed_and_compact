@@ -83,6 +83,8 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
                 },
 
                 .C => {
+                    // TODO instead of panicing, perhaps just allow this? C structures are often managed
+                    // specially anyway, and the user will just have to know that they are not copied?
                     // NOTE Similar to Many, there is no way to know how many items are present.
                     unreachable;
                 },
@@ -104,15 +106,15 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
             unreachable;
         },
 
-        // Hopefully this results in a void return.
         .Void => return,
 
         .Union => |u| {
             if (u.tag_type == null) {
                 inline for (u.fields) |field| {
                     if (ComplexType(field.field_type)) {
-                        // TODO compile time error - we can't ensure correct duplication
+                        // NOTE compile time error - we can't ensure correct duplication
                         // for untagged unions with pointers, as we don't know which field to copy.
+                        unreachable;
                     }
                 }
             } else {
@@ -121,8 +123,8 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
                     if (std.mem.eql(u8, @tagName(value.*), field.name)) {
                         // TODO this may be a problem if we actually allocate this structure on the stack.
                         // However, I don't know how else to synthesis a pointer type from a type.
-                        const variant: field.field_type = undefined;
-                        var variantPtr = @ptrCast(@TypeOf(&variant), value);
+                        const variantPtr: *field.field_type = undefined;
+                        //var variantPtr = @ptrCast(@TypeOf(&variant), value);
                         try repair(@TypeOf(variantPtr), variantPtr, allocator);
                     }
                 }
