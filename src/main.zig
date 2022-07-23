@@ -2,6 +2,7 @@ const std = @import("std");
 const trait = std.meta.trait;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
+const AllocatorError = std.mem.Allocator.Error;
 
 pub fn ComplexType(comptime T: type) bool {
     switch (@typeInfo(T)) {
@@ -37,10 +38,10 @@ pub fn ComplexType(comptime T: type) bool {
     }
 }
 
-pub fn compact(comptime T: type, value: T, allocator: Allocator) !T {
+pub fn compact(comptime T: type, value: T, allocator: Allocator) AllocatorError!T {
     switch (@typeInfo(T)) {
-        .Pointer => |p| {
-            return dupe(T, value, p.child, allocator);
+        .Pointer => {
+            return dupe(T, value, allocator);
         },
 
         else => {
@@ -49,17 +50,19 @@ pub fn compact(comptime T: type, value: T, allocator: Allocator) !T {
     }
 }
 
-// NOTE I have no idea if this always works. For example, does it work on 0 length types?
-pub fn repair(comptime T: type, value: T, comptime Child: type, allocator: Allocator) void {
-    switch (@typeInfo(Child)) {
-        .Pointer => |p| {
-            value.* = dupe(T, value, @Type(p.child), allocator);
+// NOTE I have no idea if this always works.
+// For example, does it work on 0 length types? What about packed or extern types?
+pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!void {
+    const child = @typeInfo(@typeInfo(T).Pointer.child);
+    switch (child) {
+        .Pointer => {
+            value.* = try dupe(@Type(child), value.*, allocator);
         },
 
         .Struct => |s| {
             inline for (s.fields) |field| {
                 var fieldPtr = &@field(value.*, field.name);
-                repair(@TypeOf(fieldPtr), fieldPtr, field.field_type, allocator);
+                try repair(@TypeOf(fieldPtr), fieldPtr, allocator);
             }
         },
 
@@ -90,15 +93,15 @@ pub fn repair(comptime T: type, value: T, comptime Child: type, allocator: Alloc
                         // However, I don't know how else to synthesis a pointer type from a type.
                         const variant: field.field_type = undefined;
                         var variantPtr = @ptrCast(@TypeOf(&variant), value);
-                        repair(@TypeOf(variantPtr), variantPtr, field.field_type, allocator);
+                        try repair(@TypeOf(variantPtr), variantPtr, allocator);
                     }
                 }
             }
         },
 
         .Optional => {
-            if (value.*) |child| {
-                repair(@TypeOf(&child), &child, @TypeOf(child), allocator);
+            if (value.*) |inner| {
+                try repair(@TypeOf(&inner), &inner, allocator);
             }
         },
 
@@ -108,7 +111,7 @@ pub fn repair(comptime T: type, value: T, comptime Child: type, allocator: Alloc
             if (ComplexType(a.child)) {
                 var index: usize = 0;
                 while (index < a.len) : (index += 1) {
-                    repair(@TypeOf(&value[index]), &value[index], a.child, allocator);
+                    try repair(@TypeOf(&value[index]), &value[index], allocator);
                 }
             }
         },
@@ -118,11 +121,12 @@ pub fn repair(comptime T: type, value: T, comptime Child: type, allocator: Alloc
     }
 }
 
-pub fn dupe(comptime T: type, value: T, comptime Child: type, allocator: Allocator) !T {
-    var duplicateSlice = try allocator.dupe(Child, @ptrCast([*]const Child, value)[0..1]);
+pub fn dupe(comptime T: type, value: T, allocator: Allocator) AllocatorError!T {
+    const child = @typeInfo(T).Pointer.child;
+    var duplicateSlice = try allocator.dupe(child, @ptrCast([*]const child, value)[0..1]);
     var duplicate = &duplicateSlice[0];
 
-    repair(T, duplicate, Child, allocator);
+    try repair(T, duplicate, allocator);
 
     return duplicate;
 }
@@ -196,23 +200,22 @@ test "compact complex struct" {
     const S1 = struct { a: u64, b: u32, c: u8 };
     const S2 = struct {
         s1: *S1,
-        s1_array: [3]S1,
-        s1_array_ptrs: [3]*S1,
-        s1_slice: []S1,
+        //s1_array: [3]S1,
+        //s1_array_ptrs: [3]*S1,
+        //s1_slice: []S1,
     };
 
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = heapAllocator.allocator();
 
     var ptr: *S2 = try allocator.create(S2);
-    ptr.s1.* = try allocator.create(S1);
+    ptr.s1 = try allocator.create(S1);
     ptr.s1.* = S1{ .a = 1, .b = 2, .c = 3 };
-    ptr.s1_array = try allocator.create([3]S1);
-    ptr.s1_array_ptrs = try allocator.create([3]*S1);
-    var s1ptr = try allocator.create([3]S1);
-    ptr.s1_slice = s1ptr[0..];
+    //ptr.s1_array = (try allocator.create([3]S1)).*;
+    //ptr.s1_array_ptrs = (try allocator.create([3]*S1)).*;
+    //ptr.s1_slice = (try allocator.create([3]S1))[0..];
 
-    var dupePtr = try compact(*S, ptr, allocator);
+    var dupePtr = try compact(*S2, ptr, allocator);
     try std.testing.expect(ptr != dupePtr);
 }
 
