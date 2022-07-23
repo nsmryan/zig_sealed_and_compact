@@ -53,10 +53,40 @@ pub fn compact(comptime T: type, value: T, allocator: Allocator) AllocatorError!
 // NOTE I have no idea if this always works.
 // For example, does it work on 0 length types? What about packed or extern types?
 pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!void {
-    const child = @typeInfo(@typeInfo(T).Pointer.child);
+    const child_type = @typeInfo(T).Pointer.child;
+    const child = @typeInfo(child_type);
     switch (child) {
-        .Pointer => {
-            value.* = try dupe(@Type(child), value.*, allocator);
+        .Pointer => |p| {
+            switch (p.size) {
+                .One => {
+                    value.* = try dupe(@Type(child), value.*, allocator);
+                },
+
+                .Many => {
+                    // NOTE there is no way to know how long the array is here. The user may know
+                    // but there is no way to specify this.
+                    unreachable;
+                },
+
+                .Slice => {
+                    const sliceElementType = @TypeOf(value.*[0]);
+                    var duplicateSlice = try allocator.dupe(sliceElementType, @ptrCast([]const sliceElementType, value.*));
+
+                    if (ComplexType(sliceElementType)) {
+                        var index: usize = 0;
+                        while (index < duplicateSlice.len) : (index += 1) {
+                            try repair(@TypeOf(&duplicateSlice[index]), &duplicateSlice[index], allocator);
+                        }
+                    }
+
+                    value.* = duplicateSlice;
+                },
+
+                .C => {
+                    // NOTE Similar to Many, there is no way to know how many items are present.
+                    unreachable;
+                },
+            }
         },
 
         .Struct => |s| {
@@ -122,9 +152,10 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
 }
 
 pub fn dupe(comptime T: type, value: T, allocator: Allocator) AllocatorError!T {
-    const child = @typeInfo(T).Pointer.child;
+    const pointerInfo = @typeInfo(T).Pointer;
+    const child = pointerInfo.child;
     var duplicateSlice = try allocator.dupe(child, @ptrCast([*]const child, value)[0..1]);
-    var duplicate = &duplicateSlice[0];
+    var duplicate = @ptrCast(T, duplicateSlice);
 
     try repair(T, duplicate, allocator);
 
@@ -196,13 +227,28 @@ test "compact simple optional" {
     try std.testing.expectEqual(ptr.*, dupePtrNull.*);
 }
 
+test "compact simple slice" {
+    var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = heapAllocator.allocator();
+    var ptr: *[3]u32 = try allocator.create([3]u32);
+    ptr.*[0] = 1;
+    ptr.*[1] = 2;
+    ptr.*[2] = 3;
+    var dupePtr = try compact(*[3]u32, ptr, allocator);
+    try std.testing.expect(ptr != dupePtr);
+    try std.testing.expect(std.meta.eql(ptr.*, dupePtr.*));
+    try std.testing.expectEqual(ptr.*[0], dupePtr.*[0]);
+    try std.testing.expectEqual(ptr.*[1], dupePtr.*[1]);
+    try std.testing.expectEqual(ptr.*[2], dupePtr.*[2]);
+}
+
 test "compact complex struct" {
     const S1 = struct { a: u64, b: u32, c: u8 };
     const S2 = struct {
         s1: *S1,
-        //s1_array: [3]S1,
-        //s1_array_ptrs: [3]*S1,
-        //s1_slice: []S1,
+        s1_array: [3]S1,
+        s1_array_ptrs: [3]*S1,
+        s1_slice: []S1,
     };
 
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
@@ -212,11 +258,29 @@ test "compact complex struct" {
     ptr.s1 = try allocator.create(S1);
     ptr.s1.* = S1{ .a = 1, .b = 2, .c = 3 };
     ptr.s1_array = (try allocator.create([3]S1)).*;
-    //ptr.s1_array_ptrs = (try allocator.create([3]*S1)).*;
-    //ptr.s1_slice = (try allocator.create([3]S1))[0..];
+    ptr.s1_array[0] = S1{ .a = 4, .b = 5, .c = 6 };
+    ptr.s1_array[1] = S1{ .a = 7, .b = 8, .c = 9 };
+    ptr.s1_array[2] = S1{ .a = 10, .b = 11, .c = 12 };
+    ptr.s1_array_ptrs = (try allocator.create([3]*S1)).*;
+    ptr.s1_array_ptrs[0] = try allocator.create(S1);
+    ptr.s1_array_ptrs[1] = try allocator.create(S1);
+    ptr.s1_array_ptrs[2] = try allocator.create(S1);
+    ptr.s1_array_ptrs[0].* = ptr.s1_array[0];
+    ptr.s1_array_ptrs[1].* = ptr.s1_array[1];
+    ptr.s1_array_ptrs[2].* = ptr.s1_array[2];
+    ptr.s1_slice = (try allocator.create([3]S1))[0..];
 
     var dupePtr = try compact(*S2, ptr, allocator);
     try std.testing.expect(ptr != dupePtr);
+    try std.testing.expect(ptr.*.s1 != dupePtr.*.s1);
+    try std.testing.expect(std.meta.eql(ptr.s1_array, dupePtr.s1_array));
+    try std.testing.expect(std.meta.eql(ptr.s1_array_ptrs[0].*, dupePtr.s1_array_ptrs[0].*));
+    try std.testing.expect(std.meta.eql(ptr.s1_array_ptrs[1].*, dupePtr.s1_array_ptrs[1].*));
+    try std.testing.expect(std.meta.eql(ptr.s1_array_ptrs[2].*, dupePtr.s1_array_ptrs[2].*));
+    try std.testing.expectEqual(ptr.s1_slice.len, dupePtr.s1_slice.len);
+    try std.testing.expect(std.meta.eql(ptr.s1_slice[0], dupePtr.s1_slice[0]));
+    try std.testing.expect(std.meta.eql(ptr.s1_slice[1], dupePtr.s1_slice[1]));
+    try std.testing.expect(std.meta.eql(ptr.s1_slice[2], dupePtr.s1_slice[2]));
 }
 
 // TODO implement 'seal' and 'unseal' functions:
