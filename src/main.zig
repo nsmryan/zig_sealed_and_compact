@@ -211,7 +211,7 @@ test "compact complex struct" {
     var ptr: *S2 = try allocator.create(S2);
     ptr.s1 = try allocator.create(S1);
     ptr.s1.* = S1{ .a = 1, .b = 2, .c = 3 };
-    //ptr.s1_array = (try allocator.create([3]S1)).*;
+    ptr.s1_array = (try allocator.create([3]S1)).*;
     //ptr.s1_array_ptrs = (try allocator.create([3]*S1)).*;
     //ptr.s1_slice = (try allocator.create([3]S1))[0..];
 
