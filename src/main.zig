@@ -192,6 +192,30 @@ test "compact simple optional" {
     try std.testing.expectEqual(ptr.*, dupePtrNull.*);
 }
 
+test "compact complex struct" {
+    const S1 = struct { a: u64, b: u32, c: u8 };
+    const S2 = struct {
+        s1: *S1,
+        s1_array: [3]S1,
+        s1_array_ptrs: [3]*S1,
+        s1_slice: []S1,
+    };
+
+    var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = heapAllocator.allocator();
+
+    var ptr: *S2 = try allocator.create(S2);
+    ptr.s1.* = try allocator.create(S1);
+    ptr.s1.* = S1{ .a = 1, .b = 2, .c = 3 };
+    ptr.s1_array = try allocator.create([3]S1);
+    ptr.s1_array_ptrs = try allocator.create([3]*S1);
+    var s1ptr = try allocator.create([3]S1);
+    ptr.s1_slice = s1ptr[0..];
+
+    var dupePtr = try compact(*S, ptr, allocator);
+    try std.testing.expect(ptr != dupePtr);
+}
+
 // TODO implement 'seal' and 'unseal' functions:
 // seal may take the start of an allocator's memory, and makes pointers
 // relative to that location.
