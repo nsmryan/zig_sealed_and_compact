@@ -6,34 +6,22 @@ const AllocatorError = std.mem.Allocator.Error;
 
 const compact = @import("compact.zig");
 
-// TODO implement 'seal' and 'unseal' functions:
-// take a pointer initially, and then recurse using that base
-// pointer as the relative offset. This seems like the best design.
-// Kind of assumes that the base pointer is first in memory. This is
-// true with compact and a bump allocator, but not necessarily otherwise.
-// Another option is an allocator's base pointer, and then you can seal
-// any pointers within, in place. You can then move the whole allocation
-// space. This requires some care, but seems like it would work.
-//
-//
-// unseal takes the same arguments, but reverses the process.
-//
-// Together these allow memory to become relocatable, to be moved,
-// and then to become usable again.
-//
+// TODO
+// Seal struct
 // Consider taking a pointer, wrapping it in a Sealed struct,
 // with an unseal function that returns the original pointer or
 // something similar to make it clear that the pointer should not be
 // used.
 //
-// May take a byte array and create a dump allocator out of it, then use
-// compact to copy into this array, returning the used bytes or a slice
-// to those bytes. This allows the user to give their desired block of
-// memory.
+// TODO seal_to_buffer test does not yet pass.
 //
-// On unseal, could either occur in place, or unseal and then compact into another
-// allocator?
-
+// TODO SealError - include allocator errors, and a new error for offset issues.
+//
+// NOTE in this file, pointers that are the result of subtraction are
+// incremented by 8 to keep them off the null location 0, while maintaining
+// alignment to the largest primitive type.
+// Perhaps a larger value might be valid here as well, to maintain alignment
+// for even larger types?
 pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
     const child_type = @typeInfo(T).Pointer.child;
     const child = @typeInfo(child_type);
@@ -68,7 +56,7 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
 
                     const ptrLoc = @ptrToInt(ptr.*.ptr);
                     if (ptrLoc >= offset and (offset - ptrLoc) < size) {
-                        ptr.*.ptr = @intToPtr(child_type, offset - ptrLoc + 8);
+                        ptr.*.ptr = @intToPtr(child_type, ptrLoc - offset + 8);
                     } else {
                         // TODO return an error in a SealError set.
                     }
@@ -157,64 +145,23 @@ test "seal simple pointer" {
     try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(original_ptr));
 }
 
-test "seal relocate unseal" {
-    const buffer_size = 1024;
-    var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
-    var mainAllocator = heapAllocator.allocator();
-    var buffer = try mainAllocator.create([buffer_size]u8);
-    defer mainAllocator.destroy(buffer);
-
-    var other_buffer = try mainAllocator.create([buffer_size]u8);
-    defer mainAllocator.destroy(other_buffer);
-
-    var bufferAllocator = std.heap.FixedBufferAllocator.init(buffer);
+pub fn seal_into_buffer(comptime T: type, ptr: T, bytes: []u8) !void {
+    var bufferAllocator = std.heap.FixedBufferAllocator.init(bytes);
     var allocator = bufferAllocator.allocator();
 
-    const S1 = struct {
-        a: u32,
-        b: u8,
-    };
-    const S2 = struct { a: *u32, b: [1]*u8, c: *S1 };
-    var ptr: *S2 = try allocator.create(S2);
-    ptr.*.a = try allocator.create(u32);
-
-    ptr.*.b[0] = try allocator.create(u8);
-
-    ptr.*.c = try allocator.create(S1);
-    ptr.*.c.a = 1;
-    ptr.*.c.b = 2;
-
-    try seal(*S2, ptr, @ptrToInt(buffer), buffer_size);
-    try std.testing.expectEqual(@ptrToInt(ptr.*.a), @sizeOf(S2) + 8);
-
-    // Convert packet to original value using the original pointer's location as the offset.
-    try unseal(*S2, ptr, @ptrToInt(buffer), buffer_size);
-    try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(ptr));
-
-    // Reseal structure.
-    try seal(*S2, ptr, @ptrToInt(buffer), buffer_size);
-
-    // Copy to a new location.
-    std.mem.copy(u8, other_buffer, buffer);
-
-    // Unseal both locations so they can be compared.
-    try unseal(*S2, ptr, @ptrToInt(buffer), buffer_size);
-
-    var other_ptr = @ptrCast(*S2, @alignCast(8, other_buffer));
-    try unseal(*S2, other_ptr, @ptrToInt(other_buffer), buffer_size);
-
-    // Check that the old and new structures are the same.
-    try std.testing.expectEqual(ptr.*.a.*, other_ptr.*.a.*);
-    try std.testing.expectEqual(ptr.*.b[0].*, other_ptr.*.b[0].*);
-    try std.testing.expectEqual(ptr.*.c.*, other_ptr.*.c.*);
+    // Move structure into buffer allocator area.
+    // Ignore result- it will just be the start of 'bytes'.
+    _ = try compact.compact(T, ptr, allocator);
+    try seal(T, ptr, @ptrToInt(bytes.ptr), bytes.len);
 }
 
-//pub fn seal_alloc(comptime T: type, ptr: T, allocator: Allocator) !void {
-//    // TODO recurse on structure of
-//}
+pub fn unseal_from_buffer(comptime T: type, bytes: []u8, allocator: Allocator) !*T {
+    var ptr = @ptrCast(*T, @alignCast(@alignOf(T), bytes));
+    try unseal(T, ptr, @ptrToInt(bytes.ptr), bytes.len);
 
-//pub fn seal_into_buffer(comptime T: type, ptr: T, bytes: []u8) !void {
-//}
+    // Copy from buffer into give allocator.
+    try compact.compact(T, ptr, allocator);
+}
 
 pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
     const child_type = @typeInfo(T).Pointer.child;
@@ -321,4 +268,80 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
         // nothing to do.
         else => {},
     }
+}
+
+test "seal relocate unseal" {
+    const buffer_size = 1024;
+    var buffer align(8) = [_]u8{0} ** buffer_size;
+    var other_buffer align(8) = [_]u8{0} ** buffer_size;
+
+    var bufferAllocator = std.heap.FixedBufferAllocator.init(buffer[0..]);
+    var allocator = bufferAllocator.allocator();
+
+    const S1 = struct {
+        a: u32,
+        b: u8,
+    };
+    const S2 = struct { a: *u32, b: [1]*u8, c: *S1 };
+    var ptr: *S2 = try allocator.create(S2);
+    ptr.*.a = try allocator.create(u32);
+
+    ptr.*.b[0] = try allocator.create(u8);
+
+    ptr.*.c = try allocator.create(S1);
+    ptr.*.c.a = 1;
+    ptr.*.c.b = 2;
+
+    try seal(*S2, ptr, @ptrToInt(&buffer[0]), buffer_size);
+    try std.testing.expectEqual(@ptrToInt(ptr.*.a), @sizeOf(S2) + 8);
+
+    // Convert packet to original value using the original pointer's location as the offset.
+    try unseal(*S2, ptr, @ptrToInt(&buffer[0]), buffer_size);
+    try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(ptr));
+
+    // Reseal structure.
+    try seal(*S2, ptr, @ptrToInt(&buffer[0]), buffer_size);
+
+    // Copy to a new location.
+    std.mem.copy(u8, other_buffer[0..], buffer[0..]);
+
+    // Unseal both locations so they can be compared.
+    try unseal(*S2, ptr, @ptrToInt(&buffer[0]), buffer_size);
+
+    var other_ptr = @ptrCast(*S2, @alignCast(8, &other_buffer[0]));
+    try unseal(*S2, other_ptr, @ptrToInt(&other_buffer[0]), buffer_size);
+
+    // Check that the old and new structures are the same.
+    try std.testing.expectEqual(ptr.*.a.*, other_ptr.*.a.*);
+    try std.testing.expectEqual(ptr.*.b[0].*, other_ptr.*.b[0].*);
+    try std.testing.expectEqual(ptr.*.c.*, other_ptr.*.c.*);
+}
+
+test "seal and unseal with buffer" {
+    const S1 = struct {
+        a: u32,
+        b: u8,
+    };
+    const S2 = struct { a: *u32, b: [1]*u8, c: *S1 };
+
+    var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = heapAllocator.allocator();
+
+    const buffer_size = 1024;
+    var buffer align(8) = [_]u8{0} ** buffer_size;
+
+    var s2_ptr = try allocator.create(S2);
+    defer allocator.destroy(s2_ptr);
+
+    s2_ptr.a = try allocator.create(u32);
+    defer allocator.destroy(s2_ptr.a);
+
+    s2_ptr.b[0] = try allocator.create(u8);
+    defer allocator.destroy(s2_ptr.b[0]);
+
+    s2_ptr.c = try allocator.create(S1);
+    defer allocator.destroy(s2_ptr.c);
+
+    try seal_into_buffer(*S2, s2_ptr, buffer[0..]);
+    //var ptr = unseal_from_buffer(comptime T: type, bytes: []u8, allocator: Allocator);
 }
