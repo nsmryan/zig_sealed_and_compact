@@ -157,6 +157,41 @@ test "seal simple pointer" {
     try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(original_ptr));
 }
 
+test "seal relocate unseal" {
+    const buffer_size = 1024;
+    var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
+    var mainAllocator = heapAllocator.allocator();
+    var buffer = mainAllocator.create([buffer_size]u8);
+    defer mainAllocator.destroy(buffer);
+
+    var bufferAllocator = std.heap.FixedBufferAllocator().init(buffer);
+    var allocator = bufferAllocator.allocator();
+
+    const S1 = struct {
+        a: u32,
+        b: u8,
+    };
+    const S2 = struct { a: *u32, b: [1]*u8, c: *S1 };
+    var ptr: *S2 = try allocator.create(S2);
+    ptr.*.a = allocator.create(u32);
+    defer allocator.destroy(ptr.*.a);
+
+    ptr.*.b[0] = allocator.create(u8);
+    defer allocator.destroy(ptr.*.b[0]);
+
+    ptr.*.c = allocator.create(S1);
+    defer allocator.destroy(ptr.*.c);
+    ptr.*.c.a = 1;
+    ptr.*.c.b = 2;
+
+    try seal(*S2, ptr, @ptrToInt(buffer), buffer_size);
+    try std.testing.expectEqual(@ptrToInt(ptr), 8);
+
+    // Convert packet to original value using the original pointer's location as the offset.
+    try unseal(*S2, ptr, @ptrToInt(buffer), buffer_size);
+    try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(original_ptr));
+}
+
 //pub fn seal_alloc(comptime T: type, ptr: T, allocator: Allocator) !void {
 //    // TODO recurse on structure of
 //}
