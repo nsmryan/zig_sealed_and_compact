@@ -168,6 +168,8 @@ test "compact simple pointer" {
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = heapAllocator.allocator();
     var ptr: *u32 = try allocator.create(u32);
+    defer allocator.destroy(ptr);
+
     ptr.* = 0x01234567;
     var dupePtr = try compact(*u32, ptr, allocator);
     try std.testing.expect(ptr != dupePtr);
@@ -178,6 +180,8 @@ test "compact simple array" {
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = heapAllocator.allocator();
     var ptr: *[3]u32 = try allocator.create([3]u32);
+    defer allocator.destroy(ptr);
+
     ptr.*[0] = 1;
     ptr.*[1] = 2;
     ptr.*[2] = 3;
@@ -193,6 +197,8 @@ test "compact simple struct" {
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = heapAllocator.allocator();
     var ptr: *S = try allocator.create(S);
+    defer allocator.destroy(ptr);
+
     ptr.a = 1;
     ptr.b = 2;
     ptr.c = 3;
@@ -208,6 +214,8 @@ test "compact simple union" {
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = heapAllocator.allocator();
     var ptr: *U = try allocator.create(U);
+    defer allocator.destroy(ptr);
+
     ptr.* = U{ .a = 1 };
     var dupePtr = try compact(*U, ptr, allocator);
     try std.testing.expect(ptr != dupePtr);
@@ -218,6 +226,8 @@ test "compact simple optional" {
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = heapAllocator.allocator();
     var ptr: *?u32 = try allocator.create(?u32);
+    defer allocator.destroy(ptr);
+
     ptr.* = 1;
     var dupePtr = try compact(*?u32, ptr, allocator);
     try std.testing.expect(ptr != dupePtr);
@@ -233,6 +243,8 @@ test "compact simple slice" {
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = heapAllocator.allocator();
     var ptr: *[3]u32 = try allocator.create([3]u32);
+    defer allocator.destroy(ptr);
+
     ptr.*[0] = 1;
     ptr.*[1] = 2;
     ptr.*[2] = 3;
@@ -257,16 +269,31 @@ test "compact complex struct" {
     var allocator = heapAllocator.allocator();
 
     var ptr: *S2 = try allocator.create(S2);
+    defer allocator.destroy(ptr);
+
     ptr.s1 = try allocator.create(S1);
+    defer allocator.destroy(ptr.s1);
+
     ptr.s1.* = S1{ .a = 1, .b = 2, .c = 3 };
     ptr.s1_array = (try allocator.create([3]S1)).*;
+    defer allocator.destroy(ptr.s1_array);
+
     ptr.s1_array[0] = S1{ .a = 4, .b = 5, .c = 6 };
     ptr.s1_array[1] = S1{ .a = 7, .b = 8, .c = 9 };
     ptr.s1_array[2] = S1{ .a = 10, .b = 11, .c = 12 };
     ptr.s1_array_ptrs = (try allocator.create([3]*S1)).*;
+
+    defer allocator.destroy(ptr.s1_array_ptrs);
+
     ptr.s1_array_ptrs[0] = try allocator.create(S1);
+    defer allocator.destroy(ptr.s1_array_ptrs[0]);
+
     ptr.s1_array_ptrs[1] = try allocator.create(S1);
+    defer allocator.destroy(ptr.s1_array_ptrs[1]);
+
     ptr.s1_array_ptrs[2] = try allocator.create(S1);
+    defer allocator.destroy(ptr.s1_array_ptrs[2]);
+
     ptr.s1_array_ptrs[0].* = ptr.s1_array[0];
     ptr.s1_array_ptrs[1].* = ptr.s1_array[1];
     ptr.s1_array_ptrs[2].* = ptr.s1_array[2];

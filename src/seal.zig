@@ -41,11 +41,11 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
         .Pointer => |p| {
             switch (p.size) {
                 .One => {
-                    seal(@Type(child), value.*, offset, size);
+                    try seal(@Type(child), ptr.*, offset, size);
 
-                    const ptrLoc = @ptrToInt(value.*);
+                    const ptrLoc = @ptrToInt(ptr.*);
                     if (ptrLoc >= offset and (offset - ptrLoc) < size) {
-                        value.* = @intToPtr(offset - ptrLoc);
+                        ptr.* = @intToPtr(child_type, offset - ptrLoc + 8);
                     } else {
                         // TODO return an error in a SealError set.
                     }
@@ -59,17 +59,17 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
 
                 .Slice => {
                     // Seal each child structure. Consider avoiding this for
-                    const sliceElementType = @TypeOf(value.*[0]);
+                    const sliceElementType = @TypeOf(ptr.*[0]);
                     if (compact.ComplexType(sliceElementType)) {
                         var index: usize = 0;
-                        while (index < value.*.len) : (index += 1) {
-                            try seal(@TypeOf(&value.*[index]), &value.*[index], allocator);
+                        while (index < ptr.*.len) : (index += 1) {
+                            try seal(@TypeOf(&ptr.*[index]), &ptr.*[index], offset, size);
                         }
                     }
 
-                    const ptrLoc = @ptrToInt(value.*.ptr);
+                    const ptrLoc = @ptrToInt(ptr.*.ptr);
                     if (ptrLoc >= offset and (offset - ptrLoc) < size) {
-                        value.*.ptr = @intToPtr(offset - ptrLoc);
+                        ptr.*.ptr = @intToPtr(child_type, offset - ptrLoc + 8);
                     } else {
                         // TODO return an error in a SealError set.
                     }
@@ -86,7 +86,7 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
 
         .Struct => |s| {
             inline for (s.fields) |field| {
-                var fieldPtr = &@field(value.*, field.name);
+                var fieldPtr = &@field(ptr.*, field.name);
                 try seal(@TypeOf(fieldPtr), fieldPtr, offset, size);
             }
         },
@@ -104,7 +104,7 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
         .Union => |u| {
             if (u.tag_type == null) {
                 inline for (u.fields) |field| {
-                    if (ComplexType(field.field_type)) {
+                    if (compact.ComplexType(field.field_type)) {
                         // NOTE compile time error - we can't ensure correct duplication
                         // for untagged unions with pointers, as we don't know which field to copy.
                         unreachable;
@@ -113,11 +113,8 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
             } else {
                 inline for (u.fields) |field| {
                     // Compare name to find variant in field list
-                    if (std.mem.eql(u8, @tagName(value.*), field.name)) {
-                        // TODO this may be a problem if we actually allocate this structure on the stack.
-                        // However, I don't know how else to synthesis a pointer type from a type.
-                        const variant: field.field_type = undefined;
-                        var variantPtr = @ptrCast(@TypeOf(&variant), value);
+                    if (std.mem.eql(u8, @tagName(ptr.*), field.name)) {
+                        const variantPtr: *field.field_type = undefined;
                         try seal(@TypeOf(variantPtr), variantPtr, offset, size);
                     }
                 }
@@ -125,8 +122,8 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
         },
 
         .Optional => {
-            if (value.*) |inner| {
-                try seal(@TypeOf(&inner), &inner, allocator);
+            if (ptr.*) |inner| {
+                try seal(@TypeOf(&inner), &inner, offset, size);
                 // TODO replace with sealed pointer
             }
         },
@@ -134,11 +131,11 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
         // NOTE this doesn't necessarily handle terminated arrays correctly.
         .Array => |a| {
             // TODO implement
-            // If we have an array of complex underlying values, repair the underlying values.
-            if (ComplexType(a.child)) {
+            // If we have an array of complex underlying ptr, repair the underlying ptr.
+            if (compact.ComplexType(a.child)) {
                 var index: usize = 0;
                 while (index < a.len) : (index += 1) {
-                    try seal(@TypeOf(&value[index]), &value[index], offset, size);
+                    try seal(@TypeOf(&ptr[index]), &ptr[index], offset, size);
                 }
             }
         },
@@ -146,6 +143,23 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
         // nothing to do.
         else => {},
     }
+}
+
+test "seal simple pointer" {
+    var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = heapAllocator.allocator();
+    var ptr: *u32 = try allocator.create(u32);
+    try seal(**u32, &ptr, @ptrToInt(ptr), 1);
+    try std.testing.expectEqual(@ptrToInt(ptr), 8);
+}
+
+test "seal struct with pointer" {
+    var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = heapAllocator.allocator();
+
+    var ptr: *u32 = try allocator.create(u32);
+    try seal(**u32, &ptr, @ptrToInt(ptr), 1);
+    try std.testing.expectEqual(@ptrToInt(ptr), 8);
 }
 
 //pub fn seal_alloc(comptime T: type, ptr: T, allocator: Allocator) !void {
