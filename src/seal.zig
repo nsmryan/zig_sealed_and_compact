@@ -12,11 +12,22 @@ const compact = @import("compact.zig");
 // with an unseal function that returns the original pointer or
 // something similar to make it clear that the pointer should not be
 // used.
-//
-// TODO seal_to_buffer test does not yet pass.
+// MAYBE ignore this for now, and just write up a blog post on it once the error
+// set thing is done.
 //
 // TODO SealError - include allocator errors, and a new error for offset issues.
+//const A = error{
+//    NotDir,
+//    PathNotFound,
+//};
+//const B = error{
+//    OutOfMemory,
+//    PathNotFound,
+//};
+//const C = A || B;
 //
+// TODO maybe test with slices or something
+
 // NOTE in this file, pointers that are the result of subtraction are
 // incremented by 8 to keep them off the null location 0, while maintaining
 // alignment to the largest primitive type.
