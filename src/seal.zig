@@ -6,8 +6,7 @@ const AllocatorError = std.mem.Allocator.Error;
 
 const compact = @import("compact.zig");
 
-// TODO test with slices
-// TODO implement and test optionals
+// TODO test optionals
 
 const PointerError = error{
     PointerNotInRange,
@@ -106,10 +105,13 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void
             }
         },
 
-        .Optional => {
-            if (ptr.*) |inner| {
-                try seal(@TypeOf(&inner), &inner, offset, size);
-                ptr.* = inner;
+        .Optional => |o| {
+            if (compact.ComplexType(o.child)) {
+                if (ptr.* != null) {
+                    // I'm not sure about this- can we use a pointer to the inner part of an optional
+                    // even if that optional is not a pointer?
+                    try seal(*o.child, @ptrCast(*o.child, &ptr.*.?), offset, size);
+                }
             }
         },
 
@@ -246,10 +248,13 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!vo
             }
         },
 
-        .Optional => {
-            if (ptr.*) |inner| {
-                try unseal(@TypeOf(&inner), &inner, offset, size);
-                // TODO replace with sealed pointer
+        .Optional => |o| {
+            if (compact.ComplexType(o.child)) {
+                if (ptr.* != null) {
+                    // I'm not sure about this- can we use a pointer to the inner part of an optional
+                    // even if that optional is not a pointer?
+                    try unseal(*o.child, @ptrCast(*o.child, &ptr.*.?), offset, size);
+                }
             }
         },
 
@@ -320,7 +325,7 @@ test "seal and unseal with buffer" {
         a: u32,
         b: u8,
     };
-    const S2 = struct { a: *u32, b: [1]*u8, c: *S1, d: []u16 };
+    const S2 = struct { a: *u32, b: [1]*u8, c: *S1, d: []u16, e: ?*i8 };
 
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = heapAllocator.allocator();
@@ -344,10 +349,16 @@ test "seal and unseal with buffer" {
     defer allocator.destroy(slice_ptr);
     s2_ptr.d = slice_ptr[0..];
 
+    s2_ptr.e.? = try allocator.create(i8);
+    defer allocator.destroy(s2_ptr.e.?);
+    s2_ptr.e.?.* = 9;
+
     try seal_into_buffer(*S2, s2_ptr, buffer[0..]);
 
     var new_ptr = try unseal_from_buffer(*S2, buffer[0..], allocator);
     try std.testing.expectEqual(s2_ptr.*.a.*, new_ptr.*.a.*);
     try std.testing.expectEqual(s2_ptr.*.b[0].*, new_ptr.*.b[0].*);
     try std.testing.expectEqual(s2_ptr.*.c.*, new_ptr.*.c.*);
+
+    try std.testing.expectEqual(s2_ptr.*.e.?.*, new_ptr.*.e.?.*);
 }

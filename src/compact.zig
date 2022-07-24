@@ -131,9 +131,13 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
             }
         },
 
-        .Optional => {
-            if (value.*) |inner| {
-                try repair(@TypeOf(&inner), &inner, allocator);
+        .Optional => |o| {
+            if (ComplexType(o.child)) {
+                if (value.* != null) {
+                    // I'm not sure about this- can we use a pointer to the inner part of an optional
+                    // even if that optional is not a pointer?
+                    try repair(*o.child, @ptrCast(*o.child, &value.*), allocator);
+                }
             }
         },
 
