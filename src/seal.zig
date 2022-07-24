@@ -6,8 +6,6 @@ const AllocatorError = std.mem.Allocator.Error;
 
 const compact = @import("compact.zig");
 
-// TODO test optionals
-
 const PointerError = error{
     PointerNotInRange,
     SlicePointerInvalid,
@@ -19,6 +17,10 @@ const SealError = AllocatorError || PointerError;
 // alignment to the largest primitive type.
 // Perhaps a larger value might be valid here as well, to maintain alignment
 // for even larger types?
+
+/// Seal an object given by the pointer 'ptr'. The result will be that the structure is no
+/// longer usable, but can be relocated, saved to disk, restored, and otherwise copied and
+/// duplicated and then later 'unseal'ed to be usable again.
 pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void {
     const child_type = @typeInfo(T).Pointer.child;
     const child = @typeInfo(child_type);
@@ -145,13 +147,15 @@ test "seal simple pointer" {
     try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(original_ptr));
 }
 
-pub fn seal_into_buffer(comptime T: type, ptr: T, bytes: []u8) !void {
+pub fn seal_into_buffer(comptime T: type, ptr: T, bytes: []u8) !usize {
     var bufferAllocator = std.heap.FixedBufferAllocator.init(bytes);
     var allocator = bufferAllocator.allocator();
 
     // Move structure into buffer allocator area.
     var new_ptr = try compact.compact(T, ptr, allocator);
     try seal(T, new_ptr, @ptrToInt(bytes.ptr), bytes.len);
+
+    return bufferAllocator.end_index;
 }
 
 pub fn unseal_from_buffer(comptime T: type, bytes: []u8, allocator: Allocator) !T {
@@ -162,6 +166,8 @@ pub fn unseal_from_buffer(comptime T: type, bytes: []u8, allocator: Allocator) !
     return try compact.compact(T, ptr, allocator);
 }
 
+/// Unseal a structure that was previously passed to 'seal. The structure will
+/// be usable after the call to 'unseal' completes.
 pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void {
     const child_type = @typeInfo(T).Pointer.child;
     const child = @typeInfo(child_type);
@@ -353,7 +359,7 @@ test "seal and unseal with buffer" {
     defer allocator.destroy(s2_ptr.e.?);
     s2_ptr.e.?.* = 9;
 
-    try seal_into_buffer(*S2, s2_ptr, buffer[0..]);
+    _ = try seal_into_buffer(*S2, s2_ptr, buffer[0..]);
 
     var new_ptr = try unseal_from_buffer(*S2, buffer[0..], allocator);
     try std.testing.expectEqual(s2_ptr.*.a.*, new_ptr.*.a.*);

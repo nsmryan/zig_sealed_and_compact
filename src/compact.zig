@@ -4,6 +4,7 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const AllocatorError = std.mem.Allocator.Error;
 
+/// Check if a type is 'complex', meaning that it contains pointers or slices.
 pub fn ComplexType(comptime T: type) bool {
     switch (@typeInfo(T)) {
         .Pointer => {
@@ -38,6 +39,8 @@ pub fn ComplexType(comptime T: type) bool {
     }
 }
 
+/// Reallocate a structure given by the pointer 'value' into the given allocator.
+/// This is a generic deep copy.
 pub fn compact(comptime T: type, value: T, allocator: Allocator) AllocatorError!T {
     switch (@typeInfo(T)) {
         .Pointer => {
@@ -50,6 +53,8 @@ pub fn compact(comptime T: type, value: T, allocator: Allocator) AllocatorError!
     }
 }
 
+/// Repair a copied structure, meaning check for pointers and reallocate them in mutual
+/// recursion with 'dupe'.
 // NOTE I have no idea if this always works.
 // For example, does it work on 0 length types? What about packed or extern types?
 pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!void {
@@ -157,6 +162,8 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
     }
 }
 
+/// Duplicate an allocation using the given allocator, recusively reallocating and
+/// updating pointers contained in the given object.
 pub fn dupe(comptime T: type, value: T, allocator: Allocator) AllocatorError!T {
     const pointerInfo = @typeInfo(T).Pointer;
     const child = pointerInfo.child;
