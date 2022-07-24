@@ -58,7 +58,6 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
                 },
 
                 .Slice => {
-                    // Seal each child structure. Consider avoiding this for
                     const sliceElementType = @TypeOf(ptr.*[0]);
                     if (compact.ComplexType(sliceElementType)) {
                         var index: usize = 0;
@@ -124,14 +123,12 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
         .Optional => {
             if (ptr.*) |inner| {
                 try seal(@TypeOf(&inner), &inner, offset, size);
-                // TODO replace with sealed pointer
+                ptr.* = inner;
             }
         },
 
         // NOTE this doesn't necessarily handle terminated arrays correctly.
         .Array => |a| {
-            // TODO implement
-            // If we have an array of complex underlying ptr, repair the underlying ptr.
             if (compact.ComplexType(a.child)) {
                 var index: usize = 0;
                 while (index < a.len) : (index += 1) {
@@ -149,17 +146,15 @@ test "seal simple pointer" {
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = heapAllocator.allocator();
     var ptr: *u32 = try allocator.create(u32);
+    const original_ptr = ptr;
+    defer allocator.destroy(original_ptr);
+
     try seal(**u32, &ptr, @ptrToInt(ptr), 1);
     try std.testing.expectEqual(@ptrToInt(ptr), 8);
-}
 
-test "seal struct with pointer" {
-    var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
-    var allocator = heapAllocator.allocator();
-
-    var ptr: *u32 = try allocator.create(u32);
-    try seal(**u32, &ptr, @ptrToInt(ptr), 1);
-    try std.testing.expectEqual(@ptrToInt(ptr), 8);
+    // Convert packet to original value using the original pointer's location as the offset.
+    try unseal(**u32, &ptr, @ptrToInt(original_ptr), 8);
+    try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(original_ptr));
 }
 
 //pub fn seal_alloc(comptime T: type, ptr: T, allocator: Allocator) !void {
@@ -168,3 +163,110 @@ test "seal struct with pointer" {
 
 //pub fn seal_into_buffer(comptime T: type, ptr: T, bytes: []u8) !void {
 //}
+
+pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
+    const child_type = @typeInfo(T).Pointer.child;
+    const child = @typeInfo(child_type);
+    switch (child) {
+        .Pointer => |p| {
+            switch (p.size) {
+                .One => {
+                    const ptrLoc = @ptrToInt(ptr.*);
+                    if (ptrLoc >= 8 and (ptrLoc - 8 + @sizeOf(child_type)) <= size) {
+                        ptr.* = @intToPtr(child_type, offset + ptrLoc - 8);
+                    } else {
+                        // TODO return an error in a SealError set.
+                    }
+
+                    try unseal(@Type(child), ptr.*, offset, size);
+                },
+
+                .Many => {
+                    // NOTE there is no way to know how long the array is here. The user may know
+                    // but there is no way to specify this.
+                    unreachable;
+                },
+
+                .Slice => {
+                    const ptrLoc = @ptrToInt(ptr.*.ptr);
+                    if (ptrLoc >= 8 and (ptrLoc - 8 + @sizeOf(child_type)) < size) {
+                        ptr.*.ptr = @intToPtr(child_type, offset + ptrLoc - 8);
+                    } else {
+                        // TODO return an error in a SealError set.
+                    }
+
+                    const sliceElementType = @TypeOf(ptr.*[0]);
+                    if (compact.ComplexType(sliceElementType)) {
+                        var index: usize = 0;
+                        while (index < ptr.*.len) : (index += 1) {
+                            try unseal(@TypeOf(&ptr.*[index]), &ptr.*[index], offset, size);
+                        }
+                    }
+                },
+
+                .C => {
+                    // No way to unseal a C pointer unless we assume it was allocated by a Zig allocator,
+                    // which is not particularly likely.
+                    unreachable;
+                },
+            }
+        },
+
+        .Struct => |s| {
+            inline for (s.fields) |field| {
+                var fieldPtr = &@field(ptr.*, field.name);
+                try unseal(@TypeOf(fieldPtr), fieldPtr, offset, size);
+            }
+        },
+
+        .ComptimeInt => {
+            unreachable;
+        },
+
+        .ComptimeFloat => {
+            unreachable;
+        },
+
+        .Void => return,
+
+        .Union => |u| {
+            if (u.tag_type == null) {
+                inline for (u.fields) |field| {
+                    if (compact.ComplexType(field.field_type)) {
+                        // NOTE compile time error - we can't ensure correct duplication
+                        // for untagged unions with pointers, as we don't know which field to copy.
+                        unreachable;
+                    }
+                }
+            } else {
+                inline for (u.fields) |field| {
+                    // Compare name to find variant in field list
+                    if (std.mem.eql(u8, @tagName(ptr.*), field.name)) {
+                        const variantPtr: *field.field_type = undefined;
+                        try unseal(@TypeOf(variantPtr), variantPtr, offset, size);
+                    }
+                }
+            }
+        },
+
+        .Optional => {
+            if (ptr.*) |inner| {
+                try unseal(@TypeOf(&inner), &inner, offset, size);
+                // TODO replace with sealed pointer
+            }
+        },
+
+        // NOTE this doesn't necessarily handle terminated arrays correctly.
+        .Array => |a| {
+            if (compact.ComplexType(a.child)) {
+                var index: usize = 0;
+                while (index < a.len) : (index += 1) {
+                    try unseal(@TypeOf(&ptr[index]), &ptr[index], offset, size);
+                }
+            }
+        },
+
+        // nothing to do.
+        else => {},
+    }
+}

@@ -275,15 +275,13 @@ test "compact complex struct" {
     defer allocator.destroy(ptr.s1);
 
     ptr.s1.* = S1{ .a = 1, .b = 2, .c = 3 };
-    ptr.s1_array = (try allocator.create([3]S1)).*;
-    defer allocator.destroy(ptr.s1_array);
+    ptr.s1_array = undefined;
 
     ptr.s1_array[0] = S1{ .a = 4, .b = 5, .c = 6 };
     ptr.s1_array[1] = S1{ .a = 7, .b = 8, .c = 9 };
     ptr.s1_array[2] = S1{ .a = 10, .b = 11, .c = 12 };
-    ptr.s1_array_ptrs = (try allocator.create([3]*S1)).*;
 
-    defer allocator.destroy(ptr.s1_array_ptrs);
+    ptr.s1_array_ptrs = undefined;
 
     ptr.s1_array_ptrs[0] = try allocator.create(S1);
     defer allocator.destroy(ptr.s1_array_ptrs[0]);
@@ -298,6 +296,7 @@ test "compact complex struct" {
     ptr.s1_array_ptrs[1].* = ptr.s1_array[1];
     ptr.s1_array_ptrs[2].* = ptr.s1_array[2];
     ptr.s1_slice = (try allocator.create([3]S1))[0..];
+    defer allocator.destroy(ptr.s1_slice.ptr);
 
     var dupePtr = try compact(*S2, ptr, allocator);
     try std.testing.expect(ptr != dupePtr);
