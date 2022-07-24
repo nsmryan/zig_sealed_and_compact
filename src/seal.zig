@@ -191,17 +191,19 @@ test "seal relocate unseal" {
     try unseal(*S2, ptr, @ptrToInt(buffer), buffer_size);
     try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(ptr));
 
-    // Reseal structure
+    // Reseal structure.
     try seal(*S2, ptr, @ptrToInt(buffer), buffer_size);
-    // copy to a new location
-    std.mem.copy(u8, other_buffer, buffer);
-    // unseal at the new location.
-    var other_ptr = @ptrCast(*S2, @alignCast(8, other_buffer));
 
+    // Copy to a new location.
+    std.mem.copy(u8, other_buffer, buffer);
+
+    // Unseal both locations so they can be compared.
     try unseal(*S2, ptr, @ptrToInt(buffer), buffer_size);
+
+    var other_ptr = @ptrCast(*S2, @alignCast(8, other_buffer));
     try unseal(*S2, other_ptr, @ptrToInt(other_buffer), buffer_size);
 
-    // check that the old and new structures are the same.
+    // Check that the old and new structures are the same.
     try std.testing.expectEqual(ptr.*.a.*, other_ptr.*.a.*);
     try std.testing.expectEqual(ptr.*.b[0].*, other_ptr.*.b[0].*);
     try std.testing.expectEqual(ptr.*.c.*, other_ptr.*.c.*);
