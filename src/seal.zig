@@ -44,8 +44,8 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
                     try seal(@Type(child), ptr.*, offset, size);
 
                     const ptrLoc = @ptrToInt(ptr.*);
-                    if (ptrLoc >= offset and (offset - ptrLoc) < size) {
-                        ptr.* = @intToPtr(child_type, offset - ptrLoc + 8);
+                    if (ptrLoc >= offset and (ptrLoc - offset) < size) {
+                        ptr.* = @intToPtr(child_type, ptrLoc - offset + 8);
                     } else {
                         // TODO return an error in a SealError set.
                     }
@@ -161,10 +161,13 @@ test "seal relocate unseal" {
     const buffer_size = 1024;
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var mainAllocator = heapAllocator.allocator();
-    var buffer = mainAllocator.create([buffer_size]u8);
+    var buffer = try mainAllocator.create([buffer_size]u8);
     defer mainAllocator.destroy(buffer);
 
-    var bufferAllocator = std.heap.FixedBufferAllocator().init(buffer);
+    var other_buffer = try mainAllocator.create([buffer_size]u8);
+    defer mainAllocator.destroy(other_buffer);
+
+    var bufferAllocator = std.heap.FixedBufferAllocator.init(buffer);
     var allocator = bufferAllocator.allocator();
 
     const S1 = struct {
@@ -173,23 +176,35 @@ test "seal relocate unseal" {
     };
     const S2 = struct { a: *u32, b: [1]*u8, c: *S1 };
     var ptr: *S2 = try allocator.create(S2);
-    ptr.*.a = allocator.create(u32);
-    defer allocator.destroy(ptr.*.a);
+    ptr.*.a = try allocator.create(u32);
 
-    ptr.*.b[0] = allocator.create(u8);
-    defer allocator.destroy(ptr.*.b[0]);
+    ptr.*.b[0] = try allocator.create(u8);
 
-    ptr.*.c = allocator.create(S1);
-    defer allocator.destroy(ptr.*.c);
+    ptr.*.c = try allocator.create(S1);
     ptr.*.c.a = 1;
     ptr.*.c.b = 2;
 
     try seal(*S2, ptr, @ptrToInt(buffer), buffer_size);
-    try std.testing.expectEqual(@ptrToInt(ptr), 8);
+    try std.testing.expectEqual(@ptrToInt(ptr.*.a), @sizeOf(S2) + 8);
 
     // Convert packet to original value using the original pointer's location as the offset.
     try unseal(*S2, ptr, @ptrToInt(buffer), buffer_size);
-    try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(original_ptr));
+    try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(ptr));
+
+    // Reseal structure
+    try seal(*S2, ptr, @ptrToInt(buffer), buffer_size);
+    // copy to a new location
+    std.mem.copy(u8, other_buffer, buffer);
+    // unseal at the new location.
+    var other_ptr = @ptrCast(*S2, @alignCast(8, other_buffer));
+
+    try unseal(*S2, ptr, @ptrToInt(buffer), buffer_size);
+    try unseal(*S2, other_ptr, @ptrToInt(other_buffer), buffer_size);
+
+    // check that the old and new structures are the same.
+    try std.testing.expectEqual(ptr.*.a.*, other_ptr.*.a.*);
+    try std.testing.expectEqual(ptr.*.b[0].*, other_ptr.*.b[0].*);
+    try std.testing.expectEqual(ptr.*.c.*, other_ptr.*.c.*);
 }
 
 //pub fn seal_alloc(comptime T: type, ptr: T, allocator: Allocator) !void {
