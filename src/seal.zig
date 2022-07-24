@@ -6,34 +6,21 @@ const AllocatorError = std.mem.Allocator.Error;
 
 const compact = @import("compact.zig");
 
-// TODO
-// Seal struct
-// Consider taking a pointer, wrapping it in a Sealed struct,
-// with an unseal function that returns the original pointer or
-// something similar to make it clear that the pointer should not be
-// used.
-// MAYBE ignore this for now, and just write up a blog post on it once the error
-// set thing is done.
-//
-// TODO SealError - include allocator errors, and a new error for offset issues.
-//const A = error{
-//    NotDir,
-//    PathNotFound,
-//};
-//const B = error{
-//    OutOfMemory,
-//    PathNotFound,
-//};
-//const C = A || B;
-//
-// TODO maybe test with slices or something
+// TODO test with slices
+// TODO implement and test optionals
+
+const PointerError = error{
+    PointerNotInRange,
+    SlicePointerInvalid,
+};
+const SealError = AllocatorError || PointerError;
 
 // NOTE in this file, pointers that are the result of subtraction are
 // incremented by 8 to keep them off the null location 0, while maintaining
 // alignment to the largest primitive type.
 // Perhaps a larger value might be valid here as well, to maintain alignment
 // for even larger types?
-pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
+pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void {
     const child_type = @typeInfo(T).Pointer.child;
     const child = @typeInfo(child_type);
     switch (child) {
@@ -46,14 +33,14 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
                     if (ptrLoc >= offset and (ptrLoc - offset) < size) {
                         ptr.* = @intToPtr(child_type, ptrLoc - offset + 8);
                     } else {
-                        // TODO return an error in a SealError set.
+                        return SealError.PointerNotInRange;
                     }
                 },
 
                 .Many => {
                     // NOTE there is no way to know how long the array is here. The user may know
                     // but there is no way to specify this.
-                    unreachable;
+                    @compileError("Cannot seal a multi target pointer!");
                 },
 
                 .Slice => {
@@ -66,10 +53,10 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
                     }
 
                     const ptrLoc = @ptrToInt(ptr.*.ptr);
-                    if (ptrLoc >= offset and (offset - ptrLoc) < size) {
-                        ptr.*.ptr = @intToPtr(child_type, ptrLoc - offset + 8);
+                    if (ptrLoc >= offset and (ptrLoc - offset) < size) {
+                        ptr.*.ptr = @intToPtr([*]sliceElementType, ptrLoc - offset + 8);
                     } else {
-                        // TODO return an error in a SealError set.
+                        return SealError.PointerNotInRange;
                     }
                 },
 
@@ -77,7 +64,7 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
                     // TODO if this was allowed, the structure would not be completely sealed. However,
                     // perhaps there is a use case for this, and it could be enabled by a flag?
                     // NOTE Similar to Many, there is no way to know how many items are present.
-                    unreachable;
+                    @compileError("Cannot seal a C pointer!");
                 },
             }
         },
@@ -90,11 +77,11 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
         },
 
         .ComptimeInt => {
-            unreachable;
+            @compileError("Cannot seal a comptime int!");
         },
 
         .ComptimeFloat => {
-            unreachable;
+            @compileError("Cannot seal a comptime float!");
         },
 
         .Void => return,
@@ -105,7 +92,7 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
                     if (compact.ComplexType(field.field_type)) {
                         // NOTE compile time error - we can't ensure correct duplication
                         // for untagged unions with pointers, as we don't know which field to copy.
-                        unreachable;
+                        @compileError("Cannot seal an untagged union with complex fields!");
                     }
                 }
             } else {
@@ -161,20 +148,19 @@ pub fn seal_into_buffer(comptime T: type, ptr: T, bytes: []u8) !void {
     var allocator = bufferAllocator.allocator();
 
     // Move structure into buffer allocator area.
-    // Ignore result- it will just be the start of 'bytes'.
-    _ = try compact.compact(T, ptr, allocator);
-    try seal(T, ptr, @ptrToInt(bytes.ptr), bytes.len);
+    var new_ptr = try compact.compact(T, ptr, allocator);
+    try seal(T, new_ptr, @ptrToInt(bytes.ptr), bytes.len);
 }
 
 pub fn unseal_from_buffer(comptime T: type, bytes: []u8, allocator: Allocator) !T {
     var ptr = @ptrCast(T, @alignCast(@alignOf(T), bytes));
     try unseal(T, ptr, @ptrToInt(bytes.ptr), bytes.len);
 
-    // Copy from buffer into give allocator.
+    // Copy from buffer into given allocator.
     return try compact.compact(T, ptr, allocator);
 }
 
-pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
+pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void {
     const child_type = @typeInfo(T).Pointer.child;
     const child = @typeInfo(child_type);
     switch (child) {
@@ -182,10 +168,10 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
             switch (p.size) {
                 .One => {
                     const ptrLoc = @ptrToInt(ptr.*);
-                    if (ptrLoc >= 8 and (ptrLoc - 8 + @sizeOf(child_type)) <= size) {
+                    if (ptrLoc >= 8 and (ptrLoc - 8) <= size) {
                         ptr.* = @intToPtr(child_type, offset + ptrLoc - 8);
                     } else {
-                        // TODO return an error in a SealError set.
+                        return PointerError.PointerNotInRange;
                     }
 
                     try unseal(@Type(child), ptr.*, offset, size);
@@ -194,18 +180,19 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
                 .Many => {
                     // NOTE there is no way to know how long the array is here. The user may know
                     // but there is no way to specify this.
-                    unreachable;
+                    @compileError("Cannot unseal a multi value pointer");
                 },
 
                 .Slice => {
+                    const sliceElementType = @TypeOf(ptr.*[0]);
+
                     const ptrLoc = @ptrToInt(ptr.*.ptr);
-                    if (ptrLoc >= 8 and (ptrLoc - 8 + @sizeOf(child_type)) < size) {
-                        ptr.*.ptr = @intToPtr(child_type, offset + ptrLoc - 8);
+                    if (ptrLoc >= 8 and (ptrLoc - 8) < size) {
+                        ptr.*.ptr = @intToPtr([*]sliceElementType, offset + ptrLoc - 8);
                     } else {
-                        // TODO return an error in a SealError set.
+                        return SealError.SlicePointerInvalid;
                     }
 
-                    const sliceElementType = @TypeOf(ptr.*[0]);
                     if (compact.ComplexType(sliceElementType)) {
                         var index: usize = 0;
                         while (index < ptr.*.len) : (index += 1) {
@@ -217,7 +204,7 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
                 .C => {
                     // No way to unseal a C pointer unless we assume it was allocated by a Zig allocator,
                     // which is not particularly likely.
-                    unreachable;
+                    @compileError("Cannot unseal a C pointer");
                 },
             }
         },
@@ -230,11 +217,11 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
         },
 
         .ComptimeInt => {
-            unreachable;
+            @compileError("Cannot unseal a comptime int");
         },
 
         .ComptimeFloat => {
-            unreachable;
+            @compileError("Cannot unseal a comptime float");
         },
 
         .Void => return,
@@ -245,7 +232,7 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
                     if (compact.ComplexType(field.field_type)) {
                         // NOTE compile time error - we can't ensure correct duplication
                         // for untagged unions with pointers, as we don't know which field to copy.
-                        unreachable;
+                        @compileError("Cannot unseal an untagged union with complex fields");
                     }
                 }
             } else {
@@ -333,7 +320,7 @@ test "seal and unseal with buffer" {
         a: u32,
         b: u8,
     };
-    const S2 = struct { a: *u32, b: [1]*u8, c: *S1 };
+    const S2 = struct { a: *u32, b: [1]*u8, c: *S1, d: []u16 };
 
     var heapAllocator = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = heapAllocator.allocator();
@@ -352,6 +339,10 @@ test "seal and unseal with buffer" {
 
     s2_ptr.c = try allocator.create(S1);
     defer allocator.destroy(s2_ptr.c);
+
+    var slice_ptr = try allocator.create([2]u16);
+    defer allocator.destroy(slice_ptr);
+    s2_ptr.d = slice_ptr[0..];
 
     try seal_into_buffer(*S2, s2_ptr, buffer[0..]);
 

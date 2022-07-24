@@ -45,7 +45,7 @@ pub fn compact(comptime T: type, value: T, allocator: Allocator) AllocatorError!
         },
 
         else => {
-            unreachable;
+            @compileError("Unable to compact non-pointer types! Expected a pointer to an allocation");
         },
     }
 }
@@ -65,7 +65,7 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
                 .Many => {
                     // NOTE there is no way to know how long the array is here. The user may know
                     // but there is no way to specify this.
-                    unreachable;
+                    @compileError("Unable to repair many valued pointer");
                 },
 
                 .Slice => {
@@ -86,7 +86,7 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
                     // TODO instead of panicing, perhaps just allow this? C structures are often managed
                     // specially anyway, and the user will just have to know that they are not copied?
                     // NOTE Similar to Many, there is no way to know how many items are present.
-                    unreachable;
+                    @compileError("Unable to repair C pointer");
                 },
             }
         },
@@ -99,11 +99,11 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
         },
 
         .ComptimeInt => {
-            unreachable;
+            @compileError("Cannot repair a comptime int");
         },
 
         .ComptimeFloat => {
-            unreachable;
+            @compileError("Cannot repair a comptime float");
         },
 
         .Void => return,
@@ -114,7 +114,7 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
                     if (ComplexType(field.field_type)) {
                         // NOTE compile time error - we can't ensure correct duplication
                         // for untagged unions with pointers, as we don't know which field to copy.
-                        unreachable;
+                        @compileError("Cannot repair an untagged union with complex fields!");
                     }
                 }
             } else {
@@ -295,8 +295,12 @@ test "compact complex struct" {
     ptr.s1_array_ptrs[0].* = ptr.s1_array[0];
     ptr.s1_array_ptrs[1].* = ptr.s1_array[1];
     ptr.s1_array_ptrs[2].* = ptr.s1_array[2];
+
     ptr.s1_slice = (try allocator.create([3]S1))[0..];
     defer allocator.destroy(ptr.s1_slice.ptr);
+    ptr.s1_slice[0] = ptr.s1.*;
+    ptr.s1_slice[1] = ptr.s1.*;
+    ptr.s1_slice[2] = ptr.s1.*;
 
     var dupePtr = try compact(*S2, ptr, allocator);
     try std.testing.expect(ptr != dupePtr);
