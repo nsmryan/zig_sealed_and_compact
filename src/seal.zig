@@ -155,12 +155,12 @@ pub fn seal_into_buffer(comptime T: type, ptr: T, bytes: []u8) !void {
     try seal(T, ptr, @ptrToInt(bytes.ptr), bytes.len);
 }
 
-pub fn unseal_from_buffer(comptime T: type, bytes: []u8, allocator: Allocator) !*T {
-    var ptr = @ptrCast(*T, @alignCast(@alignOf(T), bytes));
+pub fn unseal_from_buffer(comptime T: type, bytes: []u8, allocator: Allocator) !T {
+    var ptr = @ptrCast(T, @alignCast(@alignOf(T), bytes));
     try unseal(T, ptr, @ptrToInt(bytes.ptr), bytes.len);
 
     // Copy from buffer into give allocator.
-    try compact.compact(T, ptr, allocator);
+    return try compact.compact(T, ptr, allocator);
 }
 
 pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) !void {
@@ -343,5 +343,9 @@ test "seal and unseal with buffer" {
     defer allocator.destroy(s2_ptr.c);
 
     try seal_into_buffer(*S2, s2_ptr, buffer[0..]);
-    //var ptr = unseal_from_buffer(comptime T: type, bytes: []u8, allocator: Allocator);
+
+    var new_ptr = try unseal_from_buffer(*S2, buffer[0..], allocator);
+    try std.testing.expectEqual(s2_ptr.*.a.*, new_ptr.*.a.*);
+    try std.testing.expectEqual(s2_ptr.*.b[0].*, new_ptr.*.b[0].*);
+    try std.testing.expectEqual(s2_ptr.*.c.*, new_ptr.*.c.*);
 }
