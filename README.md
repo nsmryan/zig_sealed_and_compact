@@ -1,3 +1,5 @@
+![](https://github.com/DomKalinowski/zig_sealed_and_compact/actions/workflows/validate-and-test.yml/badge.svg)
+
 # Zig Seal/Unseal and Compact
 
 This repository contains an implementation of two concepts in Zig:
@@ -98,3 +100,9 @@ I seem to recall that the idea was that you did not have to modify the memory on
 I think the library I was thinking of was this: https://hackage.haskell.org/package/compact, although rereading it they were actually working on something
 a bit different.
 
+## Workflow
+
+When working on the library consider using `watchexec` to automaticaly re-run tests on save:
+```
+watchexec -c -e zig zig build test --verbose
+```

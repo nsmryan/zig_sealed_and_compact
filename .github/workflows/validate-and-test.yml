@@ -1,0 +1,20 @@
+name: Works with Zig 0.13.0
+on:
+  push:
+    branches:
+      - '**'
+  pull_request: {}
+
+jobs:
+  ci:
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+      - run: zig fmt --check *.zig src/*.zig
+      - run: zig build test
