@@ -1,8 +1,7 @@
 const std = @import("std");
-const testing = std.testing;
 
-const compact = @import("compact.zig");
-const seal = @import("seal.zig");
+pub const compact = @import("compact.zig");
+pub const seal = @import("seal.zig");
 
 test "full test set" {
     _ = @import("compact.zig");
