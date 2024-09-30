@@ -57,14 +57,14 @@ pub fn compact(comptime T: type, value: T, allocator: Allocator) AllocatorError!
 /// recursion with 'dupe'.
 // NOTE I have no idea if this always works.
 // For example, does it work on 0 length types? What about packed or extern types?
-pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!void {
+pub fn repair(comptime T: type, value_ptr: T, allocator: Allocator) AllocatorError!void {
     const child_type = @typeInfo(T).Pointer.child;
     const child = @typeInfo(child_type);
     switch (child) {
         .Pointer => |p| {
             switch (p.size) {
                 .One => {
-                    value.* = try dupe(@Type(child), value.*, allocator);
+                    value_ptr.* = try dupe(@Type(child), value_ptr.*, allocator);
                 },
 
                 .Many => {
@@ -74,8 +74,8 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
                 },
 
                 .Slice => {
-                    const sliceElementType = @TypeOf(value.*[0]);
-                    var duplicateSlice = try allocator.dupe(sliceElementType, @as([]const sliceElementType, @ptrCast(value.*)));
+                    const sliceElementType = @TypeOf(value_ptr.*[0]);
+                    var duplicateSlice = try allocator.dupe(sliceElementType, @as([]const sliceElementType, @ptrCast(value_ptr.*)));
 
                     if (ComplexType(sliceElementType)) {
                         var index: usize = 0;
@@ -84,7 +84,7 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
                         }
                     }
 
-                    value.* = duplicateSlice;
+                    value_ptr.* = duplicateSlice;
                 },
 
                 .C => {
@@ -98,7 +98,7 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
 
         .Struct => |s| {
             inline for (s.fields) |field| {
-                const fieldPtr = &@field(value.*, field.name);
+                const fieldPtr = &@field(value_ptr.*, field.name);
                 try repair(@TypeOf(fieldPtr), fieldPtr, allocator);
             }
         },
@@ -125,12 +125,9 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
             } else {
                 inline for (u.fields) |field| {
                     // Compare name to find variant in field list
-                    if (std.mem.eql(u8, @tagName(value.*), field.name)) {
-                        // TODO this may be a problem if we actually allocate this structure on the stack.
-                        // However, I don't know how else to synthesis a pointer type from a type.
-                        const variantPtr: *field.type = undefined;
-                        //var variantPtr = @ptrCast(@TypeOf(&variant), value);
-                        try repair(@TypeOf(variantPtr), variantPtr, allocator);
+                    if (std.mem.eql(u8, @tagName(value_ptr.*), field.name)) {
+                        const variant_ptr: *field.type = &@field(value_ptr.*, field.name);
+                        try repair(@TypeOf(variant_ptr), variant_ptr, allocator);
                     }
                 }
             }
@@ -138,10 +135,10 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
 
         .Optional => |o| {
             if (ComplexType(o.child)) {
-                if (value.* != null) {
+                if (value_ptr.* != null) {
                     // I'm not sure about this- can we use a pointer to the inner part of an optional
                     // even if that optional is not a pointer?
-                    try repair(*o.child, @as(*o.child, @ptrCast(&value.*)), allocator);
+                    try repair(*o.child, @as(*o.child, @ptrCast(&value_ptr.*)), allocator);
                 }
             }
         },
@@ -152,7 +149,7 @@ pub fn repair(comptime T: type, value: T, allocator: Allocator) AllocatorError!v
             if (ComplexType(a.child)) {
                 var index: usize = 0;
                 while (index < a.len) : (index += 1) {
-                    try repair(@TypeOf(&value[index]), &value[index], allocator);
+                    try repair(@TypeOf(&value_ptr[index]), &value_ptr[index], allocator);
                 }
             }
         },
@@ -168,7 +165,7 @@ pub fn dupe(comptime T: type, value: T, allocator: Allocator) AllocatorError!T {
     const pointerInfo = @typeInfo(T).Pointer;
     const child = pointerInfo.child;
     const duplicateSlice = try allocator.dupe(child, @as([*]const child, @ptrCast(value))[0..1]);
-    const duplicate = @as(T, @ptrCast(duplicateSlice));  
+    const duplicate = @as(T, @ptrCast(duplicateSlice));
 
     try repair(T, duplicate, allocator);
 
@@ -231,6 +228,19 @@ test "compact simple union" {
     const dupePtr = try compact(*U, ptr, allocator);
     try std.testing.expect(ptr != dupePtr);
     try std.testing.expectEqual(ptr.a, dupePtr.a);
+}
+
+test "compact union with string field" {
+    const U = union(enum) { a: u64, b: u32, c: []const u8 };
+    var heap_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = heap_allocator.allocator();
+    const ptr: *U = try allocator.create(U);
+    defer allocator.destroy(ptr);
+
+    ptr.* = U{ .c = "lorem ipsum" };
+    const dupe_ptr = try compact(*U, ptr, allocator);
+    try std.testing.expect(ptr != dupe_ptr);
+    try std.testing.expectEqualStrings("lorem ipsum", dupe_ptr.c);
 }
 
 test "compact simple optional" {
