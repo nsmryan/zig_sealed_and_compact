@@ -1,5 +1,4 @@
 const std = @import("std");
-const trait = std.meta.trait;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const AllocatorError = std.mem.Allocator.Error;
@@ -30,9 +29,9 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void
                 .One => {
                     try seal(@Type(child), ptr.*, offset, size);
 
-                    const ptrLoc = @ptrToInt(ptr.*);
+                    const ptrLoc = @intFromPtr(ptr.*);
                     if (ptrLoc >= offset and (ptrLoc - offset) < size) {
-                        ptr.* = @intToPtr(child_type, ptrLoc - offset + 8);
+                        ptr.* = @ptrFromInt(ptrLoc - offset + 8);
                     } else {
                         return SealError.PointerNotInRange;
                     }
@@ -53,9 +52,9 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void
                         }
                     }
 
-                    const ptrLoc = @ptrToInt(ptr.*.ptr);
+                    const ptrLoc = @intFromPtr(ptr.*.ptr);
                     if (ptrLoc >= offset and (ptrLoc - offset) < size) {
-                        ptr.*.ptr = @intToPtr([*]sliceElementType, ptrLoc - offset + 8);
+                        @constCast(ptr).*.ptr = @ptrFromInt(ptrLoc - offset + 8);
                     } else {
                         return SealError.PointerNotInRange;
                     }
@@ -72,7 +71,7 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void
 
         .Struct => |s| {
             inline for (s.fields) |field| {
-                var fieldPtr = &@field(ptr.*, field.name);
+                const fieldPtr = &@field(ptr.*, field.name);
                 try seal(@TypeOf(fieldPtr), fieldPtr, offset, size);
             }
         },
@@ -90,7 +89,7 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void
         .Union => |u| {
             if (u.tag_type == null) {
                 inline for (u.fields) |field| {
-                    if (compact.ComplexType(field.field_type)) {
+                    if (compact.ComplexType(field.type)) {
                         // NOTE compile time error - we can't ensure correct duplication
                         // for untagged unions with pointers, as we don't know which field to copy.
                         @compileError("Cannot seal an untagged union with complex fields!");
@@ -100,8 +99,8 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void
                 inline for (u.fields) |field| {
                     // Compare name to find variant in field list
                     if (std.mem.eql(u8, @tagName(ptr.*), field.name)) {
-                        const variantPtr: *field.field_type = undefined;
-                        try seal(@TypeOf(variantPtr), variantPtr, offset, size);
+                        const variant_ptr: *field.type = @constCast(&@field(ptr.*, field.name));
+                        try seal(@TypeOf(variant_ptr), variant_ptr, offset, size);
                     }
                 }
             }
@@ -112,7 +111,7 @@ pub fn seal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!void
                 if (ptr.* != null) {
                     // I'm not sure about this- can we use a pointer to the inner part of an optional
                     // even if that optional is not a pointer?
-                    try seal(*o.child, @ptrCast(*o.child, &ptr.*.?), offset, size);
+                    try seal(*o.child, @as(*o.child, @constCast(@ptrCast(&ptr.*.?))), offset, size);
                 }
             }
         },
@@ -139,28 +138,28 @@ test "seal simple pointer" {
     const original_ptr = ptr;
     defer allocator.destroy(original_ptr);
 
-    try seal(**u32, &ptr, @ptrToInt(ptr), 1);
-    try std.testing.expectEqual(@ptrToInt(ptr), 8);
+    try seal(**u32, &ptr, @intFromPtr(ptr), 1);
+    try std.testing.expectEqual(@intFromPtr(ptr), 8);
 
     // Convert packet to original value using the original pointer's location as the offset.
-    try unseal(**u32, &ptr, @ptrToInt(original_ptr), 8);
-    try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(original_ptr));
+    try unseal(**u32, &ptr, @intFromPtr(original_ptr), 8);
+    try std.testing.expectEqual(@intFromPtr(ptr), @intFromPtr(original_ptr));
 }
 
 pub fn seal_into_buffer(comptime T: type, ptr: T, bytes: []u8) !usize {
     var bufferAllocator = std.heap.FixedBufferAllocator.init(bytes);
-    var allocator = bufferAllocator.allocator();
+    const allocator = bufferAllocator.allocator();
 
     // Move structure into buffer allocator area.
-    var new_ptr = try compact.compact(T, ptr, allocator);
-    try seal(T, new_ptr, @ptrToInt(bytes.ptr), bytes.len);
+    const new_ptr = try compact.compact(T, ptr, allocator);
+    try seal(T, new_ptr, @intFromPtr(bytes.ptr), bytes.len);
 
     return bufferAllocator.end_index;
 }
 
 pub fn unseal_from_buffer(comptime T: type, bytes: []u8, allocator: Allocator) !T {
-    var ptr = @ptrCast(T, @alignCast(@alignOf(T), bytes));
-    try unseal(T, ptr, @ptrToInt(bytes.ptr), bytes.len);
+    const ptr = @as(T, @alignCast(@ptrCast(bytes)));
+    try unseal(T, ptr, @intFromPtr(bytes.ptr), bytes.len);
 
     // Copy from buffer into given allocator.
     return try compact.compact(T, ptr, allocator);
@@ -175,9 +174,9 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!vo
         .Pointer => |p| {
             switch (p.size) {
                 .One => {
-                    const ptrLoc = @ptrToInt(ptr.*);
+                    const ptrLoc = @intFromPtr(ptr.*);
                     if (ptrLoc >= 8 and (ptrLoc - 8) <= size) {
-                        ptr.* = @intToPtr(child_type, offset + ptrLoc - 8);
+                        ptr.* = @as(child_type, @ptrFromInt(offset + ptrLoc - 8));
                     } else {
                         return PointerError.PointerNotInRange;
                     }
@@ -194,9 +193,9 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!vo
                 .Slice => {
                     const sliceElementType = @TypeOf(ptr.*[0]);
 
-                    const ptrLoc = @ptrToInt(ptr.*.ptr);
+                    const ptrLoc = @intFromPtr(ptr.*.ptr);
                     if (ptrLoc >= 8 and (ptrLoc - 8) < size) {
-                        ptr.*.ptr = @intToPtr([*]sliceElementType, offset + ptrLoc - 8);
+                        @constCast(ptr).*.ptr = @as([*]sliceElementType, @ptrFromInt(offset + ptrLoc - 8));
                     } else {
                         return SealError.SlicePointerInvalid;
                     }
@@ -219,7 +218,7 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!vo
 
         .Struct => |s| {
             inline for (s.fields) |field| {
-                var fieldPtr = &@field(ptr.*, field.name);
+                const fieldPtr = &@field(ptr.*, field.name);
                 try unseal(@TypeOf(fieldPtr), fieldPtr, offset, size);
             }
         },
@@ -237,7 +236,7 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!vo
         .Union => |u| {
             if (u.tag_type == null) {
                 inline for (u.fields) |field| {
-                    if (compact.ComplexType(field.field_type)) {
+                    if (compact.ComplexType(field.type)) {
                         // NOTE compile time error - we can't ensure correct duplication
                         // for untagged unions with pointers, as we don't know which field to copy.
                         @compileError("Cannot unseal an untagged union with complex fields");
@@ -247,8 +246,8 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!vo
                 inline for (u.fields) |field| {
                     // Compare name to find variant in field list
                     if (std.mem.eql(u8, @tagName(ptr.*), field.name)) {
-                        const variantPtr: *field.field_type = undefined;
-                        try unseal(@TypeOf(variantPtr), variantPtr, offset, size);
+                        const variant_ptr: *field.type = @constCast(&@field(ptr.*, field.name));
+                        try unseal(@TypeOf(variant_ptr), variant_ptr, offset, size);
                     }
                 }
             }
@@ -259,7 +258,7 @@ pub fn unseal(comptime T: type, ptr: T, offset: usize, size: usize) SealError!vo
                 if (ptr.* != null) {
                     // I'm not sure about this- can we use a pointer to the inner part of an optional
                     // even if that optional is not a pointer?
-                    try unseal(*o.child, @ptrCast(*o.child, &ptr.*.?), offset, size);
+                    try unseal(*o.child, @as(*o.child, @constCast(@ptrCast(&ptr.*.?))), offset, size);
                 }
             }
         },
@@ -292,7 +291,7 @@ test "seal relocate unseal" {
         b: u8,
     };
     const S2 = struct { a: *u32, b: [1]*u8, c: *S1 };
-    var ptr: *S2 = try allocator.create(S2);
+    const ptr: *S2 = try allocator.create(S2);
     ptr.*.a = try allocator.create(u32);
 
     ptr.*.b[0] = try allocator.create(u8);
@@ -301,24 +300,24 @@ test "seal relocate unseal" {
     ptr.*.c.a = 1;
     ptr.*.c.b = 2;
 
-    try seal(*S2, ptr, @ptrToInt(&buffer[0]), buffer_size);
-    try std.testing.expectEqual(@ptrToInt(ptr.*.a), @sizeOf(S2) + 8);
+    try seal(*S2, ptr, @intFromPtr(&buffer[0]), buffer_size);
+    try std.testing.expectEqual(@intFromPtr(ptr.*.a), @sizeOf(S2) + 8);
 
     // Convert packet to original value using the original pointer's location as the offset.
-    try unseal(*S2, ptr, @ptrToInt(&buffer[0]), buffer_size);
-    try std.testing.expectEqual(@ptrToInt(ptr), @ptrToInt(ptr));
+    try unseal(*S2, ptr, @intFromPtr(&buffer[0]), buffer_size);
+    try std.testing.expectEqual(@intFromPtr(ptr), @intFromPtr(ptr));
 
     // Reseal structure.
-    try seal(*S2, ptr, @ptrToInt(&buffer[0]), buffer_size);
+    try seal(*S2, ptr, @intFromPtr(&buffer[0]), buffer_size);
 
     // Copy to a new location.
-    std.mem.copy(u8, other_buffer[0..], buffer[0..]);
+    @memcpy(other_buffer[0..], buffer[0..]);
 
     // Unseal both locations so they can be compared.
-    try unseal(*S2, ptr, @ptrToInt(&buffer[0]), buffer_size);
+    try unseal(*S2, ptr, @intFromPtr(&buffer[0]), buffer_size);
 
-    var other_ptr = @ptrCast(*S2, @alignCast(8, &other_buffer[0]));
-    try unseal(*S2, other_ptr, @ptrToInt(&other_buffer[0]), buffer_size);
+    const other_ptr = @as(*S2, @ptrCast(@alignCast(&other_buffer[0])));
+    try unseal(*S2, other_ptr, @intFromPtr(&other_buffer[0]), buffer_size);
 
     // Check that the old and new structures are the same.
     try std.testing.expectEqual(ptr.*.a.*, other_ptr.*.a.*);
@@ -361,10 +360,306 @@ test "seal and unseal with buffer" {
 
     _ = try seal_into_buffer(*S2, s2_ptr, buffer[0..]);
 
-    var new_ptr = try unseal_from_buffer(*S2, buffer[0..], allocator);
+    const new_ptr = try unseal_from_buffer(*S2, buffer[0..], allocator);
     try std.testing.expectEqual(s2_ptr.*.a.*, new_ptr.*.a.*);
     try std.testing.expectEqual(s2_ptr.*.b[0].*, new_ptr.*.b[0].*);
     try std.testing.expectEqual(s2_ptr.*.c.*, new_ptr.*.c.*);
 
     try std.testing.expectEqual(s2_ptr.*.e.?.*, new_ptr.*.e.?.*);
+}
+
+test "seal and unseal union with string field with buffer" {
+    const U = union(enum) { a: u64, b: []const u8, c: u32 };
+
+    const buffer_size = 40;
+    var buffer align(8) = [_]u8{0} ** buffer_size;
+
+    const allocator = std.testing.allocator;
+
+    const u_ptr: *U = try allocator.create(U);
+
+    u_ptr.* = U{ .b = "lorem ipsum" };
+    _ = try seal_into_buffer(*U, u_ptr, buffer[0..]);
+
+    // Make sure data exists only in the buffer
+    allocator.destroy(u_ptr);
+
+    const new_ptr = try unseal_from_buffer(*U, buffer[0..], allocator);
+    defer {
+        allocator.free(new_ptr.b);
+        allocator.destroy(new_ptr);
+    }
+
+    // Make sure data exists only in the new_ptr
+    inline for (&buffer) |*i| {
+        i.* = 0;
+    }
+
+    try std.testing.expect(u_ptr != new_ptr);
+    try std.testing.expectEqualStrings("lorem ipsum", new_ptr.b);
+}
+
+const E = enum { a, b, c };
+test "seal and unseal structure with enum field with buffer" {
+    const S = struct {
+        a: E,
+        b: u8,
+    };
+
+    const buffer_size = 2;
+    var buffer align(8) = [_]u8{0} ** buffer_size;
+
+    const allocator = std.testing.allocator;
+
+    var s_ptr = try allocator.create(S);
+
+    s_ptr.a = E.c;
+    s_ptr.b = 201;
+
+    _ = try seal_into_buffer(*S, s_ptr, buffer[0..]);
+
+    // Make sure data exists only in the buffer
+    allocator.destroy(s_ptr);
+
+    const new_ptr = try unseal_from_buffer(*S, buffer[0..], allocator);
+    defer allocator.destroy(new_ptr);
+
+    try std.testing.expectEqual(E.c, new_ptr.*.a);
+    try std.testing.expectEqual(201, new_ptr.*.b);
+}
+
+test "seal and unseal structure with an optional slice of structures with buffer" {
+    const S1 = struct {
+        a: u32,
+        b: u8,
+    };
+    const S2 = struct { a: u32, b: ?[]const S1 = null };
+
+    const buffer_size = 40;
+    var buffer align(8) = [_]u8{0} ** buffer_size;
+
+    const allocator = std.testing.allocator;
+
+    var children = std.ArrayList(S1).init(allocator);
+    defer children.deinit();
+
+    try children.append(S1{
+        .a = 4_294_967_295,
+        .b = 'A',
+    });
+
+    var s2_ptr = try allocator.create(S2);
+
+    s2_ptr.a = 2_147_483_647;
+    s2_ptr.b = try children.toOwnedSlice();
+
+    _ = try seal_into_buffer(*S2, s2_ptr, buffer[0..]);
+
+    const child_ptr = &s2_ptr.b.?[0];
+    // Make sure data exists only in the buffer
+    allocator.free(s2_ptr.b.?);
+    allocator.destroy(s2_ptr);
+
+    const new_ptr = try unseal_from_buffer(*S2, buffer[0..], allocator);
+    defer {
+        allocator.free(new_ptr.b.?);
+        allocator.destroy(new_ptr);
+    }
+
+    // Make sure data exists only in the new_ptr
+    inline for (&buffer) |*i| {
+        i.* = 0;
+    }
+
+    try std.testing.expectEqual(2_147_483_647, new_ptr.a);
+    try std.testing.expect(child_ptr != &new_ptr.b.?[0]);
+    try std.testing.expectEqual(4_294_967_295, new_ptr.b.?[0].a);
+    try std.testing.expectEqual('A', new_ptr.b.?[0].b);
+}
+
+const R1 = struct {
+    l: []const u8,
+    children: ?[]const R1 = null,
+
+    pub fn deinit(self: *const R1, allocator: std.mem.Allocator) void {
+        const children = self.children orelse return;
+        for (children) |*child| {
+            child.deinit(allocator);
+        }
+
+        allocator.free(children);
+    }
+
+    pub fn deinitDeserialized(self: *const R1, allocator: std.mem.Allocator) void {
+        allocator.free(self.l);
+
+        const children = self.children orelse return;
+        for (children) |*child| {
+            child.deinitDeserialized(allocator);
+        }
+
+        allocator.free(children);
+    }
+};
+test "seal and unseal recursive structure with buffer" {
+    const buffer_size = 240;
+    var buffer align(8) = [_]u8{0} ** buffer_size;
+
+    const allocator = std.testing.allocator;
+
+    var children = std.ArrayList(R1).init(allocator);
+    defer children.deinit();
+
+    try children.append(R1{
+        .l = "Leaf 1",
+    });
+    try children.append(R1{
+        .l = "Leaf 2",
+    });
+
+    try children.append(R1{
+        .l = "Branch 1",
+        .children = try children.toOwnedSlice(),
+    });
+
+    try children.append(R1{
+        .l = "Branch 2",
+    });
+
+    var r_ptr: *R1 = try allocator.create(R1);
+
+    r_ptr.l = "Root";
+    r_ptr.children = try children.toOwnedSlice();
+
+    _ = try seal_into_buffer(*R1, r_ptr, buffer[0..]);
+
+    // Make sure data exists only in the buffer
+    r_ptr.deinit(allocator);
+    allocator.destroy(r_ptr);
+
+    const new_ptr: *R1 = try unseal_from_buffer(*R1, buffer[0..], allocator);
+    defer {
+        new_ptr.deinitDeserialized(allocator);
+        allocator.destroy(new_ptr);
+    }
+
+    // Make sure data exists only in the new_ptr
+    for (&buffer) |*i| {
+        i.* = 0;
+    }
+
+    try std.testing.expectEqualStrings("Root", new_ptr.l);
+
+    try std.testing.expectEqualStrings("Branch 1", new_ptr.children.?[0].l);
+    try std.testing.expectEqualStrings("Leaf 1", new_ptr.children.?[0].children.?[0].l);
+    try std.testing.expectEqualStrings("Leaf 2", new_ptr.children.?[0].children.?[1].l);
+
+    try std.testing.expectEqualStrings("Branch 2", new_ptr.children.?[1].l);
+    try std.testing.expectEqual(null, new_ptr.children.?[1].children);
+}
+
+const R2 = struct {
+    l: []const u8,
+    e: ?E = null,
+    children: ?[]const C = null,
+
+    pub fn deinit(self: *const R2, allocator: std.mem.Allocator) void {
+        const children = self.children orelse return;
+        for (children) |*child| {
+            child.deinit(allocator);
+        }
+
+        allocator.free(children);
+    }
+
+    pub fn deinitDeserialized(self: *const R2, allocator: std.mem.Allocator) void {
+        allocator.free(self.l);
+
+        const children = self.children orelse return;
+        for (children) |*child| {
+            child.deinitDeserialized(allocator);
+        }
+
+        allocator.free(children);
+    }
+};
+
+const C = union(enum) {
+    s: []const u8,
+    r: R2,
+
+    pub fn deinit(self: C, allocator: std.mem.Allocator) void {
+        switch (self) {
+            C.r => self.r.deinit(allocator),
+            else => undefined,
+        }
+    }
+
+    pub fn deinitDeserialized(self: C, allocator: std.mem.Allocator) void {
+        switch (self) {
+            C.r => self.r.deinitDeserialized(allocator),
+            C.s => allocator.free(self.s),
+        }
+    }
+};
+test "seal and unseal complex recursive union with buffer" {
+    const buffer_size = 328;
+    var buffer align(8) = [_]u8{0} ** buffer_size;
+
+    const allocator = std.testing.allocator;
+
+    var children = std.ArrayList(C).init(allocator);
+    defer children.deinit();
+
+    try children.append(C{ .s = "Leaf 1" });
+    try children.append(C{ .s = "Leaf 2" });
+
+    try children.append(C{
+        .r = R2{
+            .l = "Branch 1",
+            .e = .a,
+            .children = try children.toOwnedSlice(),
+        },
+    });
+    try children.append(C{
+        .r = R2{
+            .l = "Branch 2",
+            .e = .c,
+        },
+    });
+
+    const c_ptr = try allocator.create(C);
+
+    c_ptr.* = C{
+        .r = R2{
+            .l = "Root",
+            .e = .b,
+            .children = try children.toOwnedSlice(),
+        },
+    };
+
+    _ = try seal_into_buffer(*C, c_ptr, buffer[0..]);
+
+    c_ptr.deinit(allocator);
+    allocator.destroy(c_ptr);
+
+    const new_ptr: *C = try unseal_from_buffer(*C, buffer[0..], allocator);
+    defer {
+        new_ptr.deinitDeserialized(allocator);
+        allocator.destroy(new_ptr);
+    }
+
+    // Make sure data exists only in the new_ptr
+    inline for (&buffer) |*i| {
+        i.* = 0;
+    }
+
+    try std.testing.expectEqualStrings("Root", new_ptr.r.l);
+    try std.testing.expectEqual(.b, new_ptr.r.e);
+    try std.testing.expectEqualStrings("Branch 1", new_ptr.r.children.?[0].r.l);
+    try std.testing.expectEqual(.a, new_ptr.r.children.?[0].r.e);
+    try std.testing.expectEqualStrings("Leaf 1", new_ptr.r.children.?[0].r.children.?[0].s);
+    try std.testing.expectEqualStrings("Leaf 2", new_ptr.r.children.?[0].r.children.?[1].s);
+    try std.testing.expectEqualStrings("Branch 2", new_ptr.r.children.?[1].r.l);
+    try std.testing.expectEqual(.c, new_ptr.r.children.?[1].r.e);
 }
